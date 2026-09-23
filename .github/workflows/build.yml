@@ -1,0 +1,329 @@
+name: Build KernelSU Patched Images
+
+# 流程：固件直链 -> 下载 -> 解包提取分区 -> KernelSU 修补 -> 校验 -> 发布 Release
+on:
+  workflow_dispatch:
+    inputs:
+      firmware_url:
+        description: '固件直链（可多个，换行或逗号分隔）'
+        required: true
+        type: string
+      partitions:
+        description: '要提取的分区 img（逗号分隔）'
+        required: false
+        default: 'boot,init_boot'
+        type: string
+      patch_partitions:
+        description: '要修补的分区（留空 = 同上）'
+        required: false
+        default: ''
+        type: string
+      kernelsu_version:
+        description: 'KernelSU 版本（latest = 自动取最新）'
+        required: false
+        default: 'latest'
+        type: string
+      kmi:
+        description: '强制指定 KMI（如 android13-5.15，留空自动探测）'
+        required: false
+        default: ''
+        type: string
+      arch:
+        description: '目标架构'
+        required: false
+        default: 'aarch64'
+        type: choice
+        options:
+          - aarch64
+          - x86_64
+      release_tag:
+        description: '自定义 Release tag（留空自动生成）'
+        required: false
+        default: ''
+        type: string
+      cmdline:
+        description: '追加到 boot 头的额外 cmdline（可选）'
+        required: false
+        default: ''
+        type: string
+      allow_shell:
+        description: '允许 shell 获取 root'
+        required: false
+        default: false
+        type: boolean
+      enable_adbd:
+        description: '强制开启 adbd 并关闭鉴权'
+        required: false
+        default: false
+        type: boolean
+      extract_all:
+        description: '提取 payload 内全部分区（体积较大）'
+        required: false
+        default: false
+        type: boolean
+      create_release:
+        description: '是否创建 Release'
+        required: false
+        default: true
+        type: boolean
+
+  schedule:
+    # 每周一 03:00 UTC 自动跟随最新 KernelSU 重建
+    # 需要在 Variables 中配置 DEFAULT_FIRMWARE_URL
+    - cron: '0 3 * * 1'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v7
+
+      - name: 设置 Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: 释放磁盘空间
+        run: |
+          echo "清理前:"; df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android/sdk/ndk \
+                      /opt/ghc /usr/local/share/boost \
+                      /usr/local/lib/android/sdk/system-images \
+                      "$AGENT_TOOLSDIRECTORY" 2>/dev/null || true
+          sudo apt-get clean
+          echo "清理后:"; df -h /
+
+      - name: 解析构建参数
+        id: cfg
+        env:
+          IN_FIRMWARE: ${{ inputs.firmware_url }}
+          IN_PARTITIONS: ${{ inputs.partitions }}
+          IN_PATCH: ${{ inputs.patch_partitions }}
+          IN_KSU: ${{ inputs.kernelsu_version }}
+          IN_KMI: ${{ inputs.kmi }}
+          IN_ARCH: ${{ inputs.arch }}
+          IN_TAG: ${{ inputs.release_tag }}
+          IN_CMDLINE: ${{ inputs.cmdline }}
+          IN_ALLOW_SHELL: ${{ inputs.allow_shell }}
+          IN_ADBD: ${{ inputs.enable_adbd }}
+          IN_EXTRACT_ALL: ${{ inputs.extract_all }}
+          IN_RELEASE: ${{ inputs.create_release }}
+          DEFAULT_URL: ${{ vars.DEFAULT_FIRMWARE_URL }}
+        run: |
+          set -euo pipefail
+
+          FIRMWARE="${IN_FIRMWARE:-${DEFAULT_URL:-}}"
+          if [ -z "$FIRMWARE" ]; then
+            echo "::error::未提供固件直链。请填写 firmware_url 输入，"
+            echo "::error::或在仓库 Settings > Secrets and variables > Actions > Variables"
+            echo "::error::中配置 DEFAULT_FIRMWARE_URL（定时任务需要）。"
+            exit 1
+          fi
+
+          PARTITIONS="${IN_PARTITIONS:-boot,init_boot}"
+          # 未单独指定修补分区时，与提取分区一致
+          PATCH="${IN_PATCH:-$PARTITIONS}"
+          KSU="${IN_KSU:-latest}"
+          ARCH="${IN_ARCH:-aarch64}"
+
+          # 生成 tag：ksu-<版本>-<日期>-<固件指纹>
+          if [ -n "${IN_TAG:-}" ]; then
+            TAG="$IN_TAG"
+          else
+            FINGERPRINT=$(printf '%s' "$FIRMWARE" | sha256sum | cut -c1-6)
+            TAG="ksu-${KSU}-$(date -u +%Y%m%d)-${FINGERPRINT}"
+          fi
+
+          # 修补附加参数（在此统一计算，避免在命令行里做条件展开）
+          EXTRA=""
+          [ "${IN_ALLOW_SHELL:-false}" = "true" ] && EXTRA="$EXTRA --allow-shell"
+          [ "${IN_ADBD:-false}" = "true" ] && EXTRA="$EXTRA --enable-adbd"
+          [ "${IN_EXTRACT_ALL:-false}" = "true" ] && EXTRA="$EXTRA --extract-all"
+
+          {
+            echo "firmware<<__EOF__"
+            echo "$FIRMWARE"
+            echo "__EOF__"
+            echo "partitions=$PARTITIONS"
+            echo "patch_partitions=$PATCH"
+            echo "kernelsu=$KSU"
+            echo "arch=$ARCH"
+            echo "tag=$TAG"
+            echo "release=${IN_RELEASE:-true}"
+            echo "extra_flags=$EXTRA"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "构建参数: tag=$TAG ksu=$KSU arch=$ARCH"
+          echo "提取分区: $PARTITIONS"
+          echo "修补分区: $PATCH"
+          echo "附加参数: ${EXTRA:-（无）}"
+
+      - name: 安装工具
+        run: python3 scripts/setup_tools.py
+
+      - name: 获取 KernelSU（自动最新）
+        id: ksu
+        run: |
+          python3 scripts/fetch_kernelsu.py \
+            --version '${{ steps.cfg.outputs.kernelsu }}' \
+            --out-dir tools
+
+      - name: 下载固件
+        id: dl
+        env:
+          FIRMWARE: ${{ steps.cfg.outputs.firmware }}
+        run: |
+          python3 scripts/download.py \
+            --urls "$FIRMWARE" \
+            --out-dir downloads
+
+      - name: 解包并提取分区
+        id: unpack
+        run: |
+          python3 scripts/unpack.py \
+            --input downloads \
+            --out-dir work/unpacked \
+            --partitions '${{ steps.cfg.outputs.partitions }}' \
+            ${{ steps.cfg.outputs.extra_flags }}
+
+      - name: KernelSU 修补镜像
+        id: patch
+        env:
+          TARGETS: ${{ steps.unpack.outputs.targets_json }}
+          PATCH_PARTITIONS: ${{ steps.cfg.outputs.patch_partitions }}
+          KMI: ${{ inputs.kmi }}
+          ARCH: ${{ steps.cfg.outputs.arch }}
+          KSU_VER: ${{ steps.ksu.outputs.version }}
+          EXTRA_FLAGS: ${{ steps.cfg.outputs.extra_flags }}
+          CMDLINE: ${{ inputs.cmdline }}
+        run: |
+          set -euo pipefail
+
+          # 从提取结果中挑选要修补的镜像
+          IMAGES=$(python3 - <<'PY'
+          import json, os
+          targets = json.loads(os.environ.get("TARGETS") or "[]")
+          want = [p.strip().lower() for p in os.environ["PATCH_PARTITIONS"].split(",") if p.strip()]
+          picked = [t for t in targets if any(w in t.lower() for w in want)]
+          print(",".join(picked))
+          PY
+          )
+
+          if [ -z "$IMAGES" ]; then
+            echo "::error::没有匹配到要修补的镜像"
+            echo "请求修补的分区: $PATCH_PARTITIONS"
+            echo "实际可用的目标: $TARGETS"
+            exit 1
+          fi
+          echo "将修补: $IMAGES"
+
+          # 允许 shell / adbd 只对 boot 系镜像有意义，这里整体透传
+          python3 scripts/patch.py \
+            --images "$IMAGES" \
+            --out-dir work/patched \
+            --kmi "$KMI" \
+            --arch "$ARCH" \
+            --version "$KSU_VER" \
+            --cmdline "$CMDLINE" \
+            $EXTRA_FLAGS
+
+      - name: 校验修补结果
+        run: |
+          python3 scripts/verify.py \
+            --patched '${{ steps.patch.outputs.patched_files }}'
+
+      - name: 整理发布产物
+        id: rel
+        env:
+          PATCHED: ${{ steps.patch.outputs.patched_files }}
+          PARTITIONS_JSON: ${{ steps.unpack.outputs.partitions_json }}
+          WANT: ${{ steps.cfg.outputs.partitions }}
+          KSU_VER: ${{ steps.ksu.outputs.version }}
+          KMI: ${{ steps.patch.outputs.kmi }}
+          FIRMWARE: ${{ steps.cfg.outputs.firmware }}
+        run: |
+          set -euo pipefail
+
+          # 收集需要一并发布的原始分区
+          EXTRA=$(python3 - <<'PY'
+          import json, os
+          index = json.loads(os.environ.get("PARTITIONS_JSON") or "{}")
+          want = [p.strip().lower() for p in os.environ["WANT"].split(",") if p.strip()]
+          picked = [path for name, path in index.items()
+                    if any(w == name.lower() or w in name.lower() for w in want)]
+          print(",".join(picked))
+          PY
+          )
+
+          python3 scripts/release.py \
+            --patched "$PATCHED" \
+            --partitions "$EXTRA" \
+            --out-dir release \
+            --version "$KSU_VER" \
+            --kmi "$KMI" \
+            --firmware "$FIRMWARE"
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v7
+        with:
+          name: kernelsu-${{ steps.cfg.outputs.tag }}
+          path: release/**
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: 生成 Release 说明
+        env:
+          KSU_VER: ${{ steps.ksu.outputs.version }}
+          KMI: ${{ steps.patch.outputs.kmi }}
+          ARCH: ${{ steps.cfg.outputs.arch }}
+          FIRMWARE: ${{ steps.cfg.outputs.firmware }}
+          TAG: ${{ steps.cfg.outputs.tag }}
+        run: |
+          python3 scripts/gen_notes.py \
+            --manifest release/manifest.json \
+            --tag "$TAG" \
+            --ksu "$KSU_VER" \
+            --kmi "$KMI" \
+            --arch "$ARCH" \
+            --firmware "$FIRMWARE" \
+            --out release/RELEASE_NOTES.md
+
+      - name: 发布 Release
+        if: ${{ steps.cfg.outputs.release == 'true' }}
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ steps.cfg.outputs.tag }}
+          name: ${{ steps.cfg.outputs.tag }}
+          body_path: release/RELEASE_NOTES.md
+          files: |
+            release/patched/*.img
+            release/partitions/*.img
+            release/SHA256SUMS.txt
+            release/manifest.json
+          fail_on_unmatched_files: false
+          overwrite_files: true
+
+      - name: 输出摘要
+        run: |
+          {
+            echo "## 构建完成"
+            echo ""
+            echo "| 项目 | 值 |"
+            echo "|---|---|"
+            echo "| KernelSU | \`${{ steps.ksu.outputs.version }}\` |"
+            echo "| KMI | \`${{ steps.patch.outputs.kmi }}\` |"
+            echo "| 架构 | \`${{ steps.cfg.outputs.arch }}\` |"
+            echo "| 修补成功 | ${{ steps.patch.outputs.patched_count }} 个 |"
+            echo "| 校验问题 | ${{ steps.patch.outputs.failed_count }} 个失败 |"
+            echo "| Release tag | \`${{ steps.cfg.outputs.tag }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"

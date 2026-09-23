@@ -1,0 +1,52 @@
+name: Smoke Test
+
+# 在推送/PR 时跑冒烟测试，确保脚本链路没有回归
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/**'
+      - 'tests/**'
+      - '.github/workflows/smoke.yml'
+  pull_request:
+    paths:
+      - 'scripts/**'
+      - 'tests/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v7
+
+      - name: 设置 Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: 安装依赖工具
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq android-sdk-libsparse-utils p7zip-full cpio
+          python3 scripts/setup_tools.py --skip-apt --skip-magiskboot
+          python3 -m pip install --quiet pyyaml
+
+      - name: 语法检查
+        run: |
+          python3 -m compileall -q scripts tests
+          python3 - <<'PY'
+          import yaml, pathlib
+          for f in sorted(pathlib.Path(".github/workflows").glob("*.yml")):
+              yaml.safe_load(f.read_text())
+              print(f"YAML OK: {f}")
+          PY
+
+      - name: 运行冒烟测试
+        run: python3 tests/smoke_test.py
