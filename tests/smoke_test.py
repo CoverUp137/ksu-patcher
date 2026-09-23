@@ -123,6 +123,43 @@ def main() -> int:
         outputs = (work / "outputs").read_text() if (work / "outputs").exists() else ""
         check("unpack 输出 partitions_json", "partitions_json=" in outputs)
 
+        # ---------- 针对线上故障的回归用例 ----------
+        print("\n=== 3b. OTA 包处理（回归用例）===")
+        sys.path.insert(0, str(ROOT / "scripts"))
+        from unpack import index_images, list_archive  # noqa: E402
+
+        # 用例 1：payload.bin 位于压缩包第一个条目时也必须被识别
+        # （旧实现用 names[1:] 跳过"首行"，会丢掉第一个文件）
+        ota_first = work / "ota_payload_first.zip"
+        with zipfile.ZipFile(ota_first, "w", zipfile.ZIP_STORED) as zf:
+            zf.writestr("payload.bin", b"P" * 2048)
+            zf.writestr("META-INF/com/android/metadata", b"m" * 64)
+        entries = list_archive(ota_first)
+        check("payload.bin 在首位时能被列出",
+              "payload.bin" in entries, str(entries[:3]))
+        check("压缩包条目数完整（未丢失首个文件）",
+              len(entries) == 2, f"期望 2, 实际 {len(entries)}")
+
+        # 用例 2：payload.bin 不能被当成名为 payload 的分区
+        idx = index_images([Path("x/payload.bin")])
+        check("payload.bin 不被索引为分区",
+              "payload" not in idx, str(idx))
+        idx2 = index_images([Path("x/boot.img"), Path("x/init_boot.img")])
+        check("正常分区仍能正确索引",
+              set(idx2) == {"boot", "init_boot"}, str(list(idx2)))
+
+        # 用例 3：请求不存在的分区不应崩溃
+        ota_mix = work / "ota_mix.zip"
+        with zipfile.ZipFile(ota_mix, "w", zipfile.ZIP_STORED) as zf:
+            zf.write(pkg_dir / "boot.img", "boot.img")
+        r = run_step("unpack-missing", [
+            sys.executable, str(ROOT / "scripts" / "unpack.py"),
+            "--input", str(ota_mix), "--out-dir", str(work / "unpacked2"),
+            "--partitions", "boot,不存在的分区XYZ",
+        ], work)
+        check("请求不存在的分区时仍能成功退出",
+              r.returncode == 0, (r.stderr or "")[-300:] if r.returncode else "")
+
         # ---------------- 4~6. 需要真实镜像 ----------------
         if not real_boot.is_file():
             print("\n=== 4~6. 跳过（未提供 tests/fixtures/boot.img）===")

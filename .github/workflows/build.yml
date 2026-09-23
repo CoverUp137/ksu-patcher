@@ -144,11 +144,14 @@ jobs:
             TAG="ksu-${KSU}-$(date -u +%Y%m%d)-${FINGERPRINT}"
           fi
 
-          # 修补附加参数（在此统一计算，避免在命令行里做条件展开）
-          EXTRA=""
-          [ "${IN_ALLOW_SHELL:-false}" = "true" ] && EXTRA="$EXTRA --allow-shell"
-          [ "${IN_ADBD:-false}" = "true" ] && EXTRA="$EXTRA --enable-adbd"
-          [ "${IN_EXTRACT_ALL:-false}" = "true" ] && EXTRA="$EXTRA --extract-all"
+          # 两组参数分别计算：unpack.py 与 patch.py 接受的选项不同，
+          # 混用会导致 "unrecognized arguments" 直接失败
+          UNPACK_FLAGS=""
+          [ "${IN_EXTRACT_ALL:-false}" = "true" ] && UNPACK_FLAGS="$UNPACK_FLAGS --extract-all"
+
+          PATCH_FLAGS=""
+          [ "${IN_ALLOW_SHELL:-false}" = "true" ] && PATCH_FLAGS="$PATCH_FLAGS --allow-shell"
+          [ "${IN_ADBD:-false}" = "true" ] && PATCH_FLAGS="$PATCH_FLAGS --enable-adbd"
 
           {
             echo "firmware<<__EOF__"
@@ -160,13 +163,15 @@ jobs:
             echo "arch=$ARCH"
             echo "tag=$TAG"
             echo "release=${IN_RELEASE:-true}"
-            echo "extra_flags=$EXTRA"
+            echo "unpack_flags=$UNPACK_FLAGS"
+            echo "patch_flags=$PATCH_FLAGS"
           } >> "$GITHUB_OUTPUT"
 
           echo "构建参数: tag=$TAG ksu=$KSU arch=$ARCH"
           echo "提取分区: $PARTITIONS"
           echo "修补分区: $PATCH"
-          echo "附加参数: ${EXTRA:-（无）}"
+          echo "解包附加参数: ${UNPACK_FLAGS:-（无）}"
+          echo "修补附加参数: ${PATCH_FLAGS:-（无）}"
 
       - name: 安装工具
         run: python3 scripts/setup_tools.py
@@ -194,7 +199,7 @@ jobs:
             --input downloads \
             --out-dir work/unpacked \
             --partitions '${{ steps.cfg.outputs.partitions }}' \
-            ${{ steps.cfg.outputs.extra_flags }}
+            ${{ steps.cfg.outputs.unpack_flags }}
 
       - name: KernelSU 修补镜像
         id: patch
@@ -204,7 +209,7 @@ jobs:
           KMI: ${{ inputs.kmi }}
           ARCH: ${{ steps.cfg.outputs.arch }}
           KSU_VER: ${{ steps.ksu.outputs.version }}
-          EXTRA_FLAGS: ${{ steps.cfg.outputs.extra_flags }}
+          PATCH_FLAGS: ${{ steps.cfg.outputs.patch_flags }}
           CMDLINE: ${{ inputs.cmdline }}
         run: |
           set -euo pipefail
@@ -221,8 +226,14 @@ jobs:
 
           if [ -z "$IMAGES" ]; then
             echo "::error::没有匹配到要修补的镜像"
-            echo "请求修补的分区: $PATCH_PARTITIONS"
-            echo "实际可用的目标: $TARGETS"
+            echo "::error::请求修补的分区: $PATCH_PARTITIONS"
+            echo "::error::实际可用的目标: ${TARGETS:-（空）}"
+            echo ""
+            echo "排查建议:"
+            echo "  1. 确认 'partitions' 输入包含要修补的分区名（如 boot,init_boot）"
+            echo "  2. 查看上方『解包并提取分区』步骤的『分区清单』，"
+            echo "     确认固件里确实存在该分区"
+            echo "  3. 若固件是 OTA 包（含 payload.bin），分区名需与 payload 内一致"
             exit 1
           fi
           echo "将修补: $IMAGES"
@@ -235,7 +246,7 @@ jobs:
             --arch "$ARCH" \
             --version "$KSU_VER" \
             --cmdline "$CMDLINE" \
-            $EXTRA_FLAGS
+            $PATCH_FLAGS
 
       - name: 校验修补结果
         run: |

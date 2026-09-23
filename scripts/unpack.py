@@ -16,6 +16,7 @@ import argparse
 import json
 import re
 import sys
+import zipfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -38,7 +39,18 @@ from utils import (  # noqa: E402
     which,
 )
 
-IMG_SUFFIXES = (".img", ".bin")
+# 分区镜像后缀。注意不含 .bin —— 否则 payload.bin 之类会被误认成
+# 名为 "payload" 的分区（实测遇到过）
+IMG_SUFFIXES = (".img",)
+
+# 这些文件虽以 .img 结尾或与分区同名，但不是分区镜像
+NON_PARTITION_FILES = {
+    "payload.bin", "payload_properties.txt", "care_map.pb",
+    "apex_info.pb", "metadata", "metadata.pb",
+}
+
+# 仅用于「固件文件」识别的后缀（下载目录扫描时使用）
+FIRMWARE_SUFFIXES = (".zip", ".img", ".tar.md5")
 
 
 # --------------------------------------------------------------------------- #
@@ -57,21 +69,33 @@ def tool_path(name: str) -> str | None:
 
 
 def list_archive(path: Path) -> list[str]:
-    """列出压缩包内的文件路径（不解压）。"""
+    """列出压缩包内的文件路径（不解压）。
+
+    注意：`7z l -ba -slt`（bare 模式）**不会**输出压缩包自身的路径，
+    因此所有 `Path = ...` 行都是真实条目，不能丢弃第一条。
+    """
+    # 优先用 Python 标准库：无需外部工具，且对 zip64 支持最好
+    if path.suffix.lower() in (".zip", ".jar", ".apk"):
+        try:
+            with zipfile.ZipFile(path) as zf:
+                return [n for n in zf.namelist() if not n.endswith("/")]
+        except Exception as exc:
+            warn(f"zipfile 列举失败，回退到 7z/unzip: {exc}")
+
     seven = tool_path("7z") or tool_path("7za")
     if seven:
         try:
             proc = run([seven, "l", "-ba", "-slt", str(path)],
                        check=False, capture=True)
-            names = [
-                line.split("=", 1)[1].strip()
-                for line in proc.stdout.splitlines()
-                if line.startswith("Path = ")
-            ]
+            # -ba 模式下每条记录只含条目信息，不会有包自身
+            names = [line.split("=", 1)[1].strip()
+                     for line in proc.stdout.splitlines()
+                     if line.startswith("Path = ")]
             if names:
-                return names[1:] if len(names) > 1 else names  # 首行是包自身
+                return [n for n in names if n]
         except Exception as exc:
             warn(f"7z 列举失败: {exc}")
+
     try:
         proc = run(["unzip", "-Z1", str(path)], check=False, capture=True)
         return [n.strip() for n in proc.stdout.splitlines() if n.strip()]
@@ -194,10 +218,16 @@ def unpack_super(super_img: Path, dest: Path, wanted: list[str]) -> list[Path]:
 # --------------------------------------------------------------------------- #
 
 
-def index_images(images: list[Path]) -> dict[str, Path]:
-    """按分区名归类镜像，忽略 slot 后缀差异（同优先级取先出现的）。"""
+def index_images(images: list[Path], *, skip_non_partitions: bool = True) -> dict[str, Path]:
+    """按分区名归类镜像，忽略 slot 后缀差异（同优先级取先出现的）。
+
+    skip_non_partitions 为真时，会跳过 payload.bin 之类的非分区文件，
+    避免清单里出现名为 "payload" 的假分区。
+    """
     index: dict[str, Path] = {}
     for img in images:
+        if skip_non_partitions and img.name.lower() in NON_PARTITION_FILES:
+            continue
         base = img.stem.lower()
         for suffix in (".raw", ".simg"):
             if base.endswith(suffix):
@@ -233,7 +263,7 @@ def main() -> int:
     extracted: list[Path] = []
 
     with timed("解包固件"):
-        sources = [src] if src.is_file() else find_files(src, [".zip", ".img", ".bin", ".tar.md5"])
+        sources = [src] if src.is_file() else find_files(src, list(FIRMWARE_SUFFIXES))
         if not sources:
             error("未找到可解包的固件文件")
             return 1
@@ -265,9 +295,16 @@ def main() -> int:
                         raw_dir = out_dir / "raw" / item.stem
                         extract_archive(item, raw_dir)
                         imgs = [p for p in raw_dir.rglob("*")
-                                if p.is_file() and p.suffix in IMG_SUFFIXES]
+                                if p.is_file() and p.suffix in IMG_SUFFIXES
+                                and p.name.lower() not in NON_PARTITION_FILES]
                         info(f"抽取到 {len(imgs)} 个镜像")
-                        extracted.extend(imgs)
+                        if payload_in_raw := list(raw_dir.rglob("payload.bin")):
+                            # 手动解压的包里若含 payload.bin，仍按 OTA 处理
+                            info("解压后发现 payload.bin，转为解析 payload")
+                            target = None if args.extract_all else (wanted or None)
+                            extracted.extend(dump_payload(payload_in_raw[0], part_dir, target))
+                        else:
+                            extracted.extend(imgs)
             else:
                 extracted.append(item)
 
