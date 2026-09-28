@@ -67,10 +67,10 @@ on:
         default: true
         type: boolean
 
-  schedule:
+#  schedule:
     # 每周一 03:00 UTC 自动跟随最新 KernelSU 重建
     # 需要在 Variables 中配置 DEFAULT_FIRMWARE_URL
-    - cron: '0 3 * * 1'
+  #  - cron: '0 3 * * 1'
 
 permissions:
   contents: write
