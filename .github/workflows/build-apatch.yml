@@ -126,13 +126,9 @@ jobs:
             echo "::add-mask::$KEY"
 
             # 用脚本内的同一套规则校验，避免两处实现不一致
-            KEY_ERR=$(KEY="$KEY" python3 - <<'PY'
-            import os, sys
-            sys.path.insert(0, "scripts")
-            from patch_apatch import validate_superkey
-            print(validate_superkey(os.environ.get("KEY", "")) or "")
-            PY
-            )
+            # （单行写法：here-doc 放在 if 里会因为缩进而匹配不到结束符）
+            KEY_ERR=$(KEY="$KEY" PYTHONPATH=scripts python3 -c \
+              'import os; from patch_apatch import validate_superkey; print(validate_superkey(os.environ.get("KEY", "")) or "")')
             if [ -n "$KEY_ERR" ]; then
               echo "::error::SuperKey 无效：$KEY_ERR"
               exit 1
