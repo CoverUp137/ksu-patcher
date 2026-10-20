@@ -29,6 +29,8 @@ def main() -> int:
     parser.add_argument("--ksu", default="", help="（兼容）KernelSU 版本")
     parser.add_argument("--apatch", default="", help="APatch 管理器版本")
     parser.add_argument("--kpimg", default="", help="kpimg 版本（APatch）")
+    parser.add_argument("--superkey-mode", choices=["with", "without"], default="",
+                        help="APatch：是否启用了 SuperKey 校验")
     parser.add_argument("--kmi", default="", help="KMI 版本（KernelSU）")
     parser.add_argument("--arch", default="", help="目标架构")
     parser.add_argument("--firmware", default="", help="固件直链")
@@ -113,7 +115,11 @@ def main() -> int:
     lines.append("")
     if apatch:
         lines.append("> APatch 修补的是**内核**，请刷入 `boot` 分区（不要用 `init_boot`）。")
-        lines.append("> 开机后打开 APatch App，在「安装 / 修补」里输入构建时填写的 **SuperKey** 即可接管 root。")
+        if args.superkey_mode == "without":
+            lines.append("> 本次构建**未设置 SuperKey**，开机后直接打开 APatch App 即可接管 root"
+                         "（不校验密钥，注意安全）。")
+        else:
+            lines.append("> 开机后打开 APatch App，在「安装 / 修补」里输入构建时填写的 **SuperKey** 即可接管 root。")
         lines.append("> 首次刷入后建议保留原始 `boot` 镜像备份，异常时可回刷。")
     else:
         lines.append("> 使用 `init_boot` 修补包的设备请将 `boot` 换成 `init_boot`；")

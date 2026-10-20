@@ -20,7 +20,7 @@ on:
         default: ''
         type: string
       superkey:
-        description: 'APatch SuperKey（8~63 位，需含字母和数字；留空则使用 Secret APATCH_SUPERKEY）'
+        description: 'APatch SuperKey（可选；8~63 位含字母数字。留空 = 不校验 SuperKey，也可用 Secret APATCH_SUPERKEY）'
         required: false
         default: ''
         type: string
@@ -120,23 +120,23 @@ jobs:
             echo "::warning::建议改用 Secret APATCH_SUPERKEY（本次仍然继续，密钥已打码）。"
           fi
           if [ -z "$KEY" ]; then
-            echo "::error::缺少 SuperKey：请填写 superkey 输入，"
-            echo "::error::或配置 Secret APATCH_SUPERKEY（推荐，公开仓库尤其如此）。"
-            exit 1
-          fi
-          echo "::add-mask::$KEY"
+            echo "::warning::未提供 SuperKey：将按「不校验 SuperKey」模式修补，"
+            echo "::warning::开机后 APatch 不需要密钥即可拿到 root，请自行权衡。"
+          else
+            echo "::add-mask::$KEY"
 
-          # 用脚本内的同一套规则校验，避免两处实现不一致
-          KEY_ERR=$(KEY="$KEY" python3 - <<'PY'
-          import os, sys
-          sys.path.insert(0, "scripts")
-          from patch_apatch import validate_superkey
-          print(validate_superkey(os.environ.get("KEY", "")) or "")
-          PY
-          )
-          if [ -n "$KEY_ERR" ]; then
-            echo "::error::SuperKey 无效：$KEY_ERR"
-            exit 1
+            # 用脚本内的同一套规则校验，避免两处实现不一致
+            KEY_ERR=$(KEY="$KEY" python3 - <<'PY'
+            import os, sys
+            sys.path.insert(0, "scripts")
+            from patch_apatch import validate_superkey
+            print(validate_superkey(os.environ.get("KEY", "")) or "")
+            PY
+            )
+            if [ -n "$KEY_ERR" ]; then
+              echo "::error::SuperKey 无效：$KEY_ERR"
+              exit 1
+            fi
           fi
 
           UNPACK_FLAGS=""
@@ -234,7 +234,9 @@ jobs:
           fi
 
           KEY="${SUPERKEY:-$SUPERKEY_INPUT}"
-          echo "::add-mask::$KEY"
+          if [ -n "$KEY" ]; then
+            echo "::add-mask::$KEY"
+          fi
 
           python3 scripts/patch_apatch.py \
             --images "$IMAGES" \
@@ -297,6 +299,7 @@ jobs:
           KP_VER: ${{ steps.apatch.outputs.kernelpatch_version }}
           APATCH_VER: ${{ steps.apatch.outputs.apatch_version }}
           KPIMG: ${{ steps.patch.outputs.kpimg_version }}
+          SKEY_MODE: ${{ steps.patch.outputs.superkey_mode }}
           FIRMWARE: ${{ steps.cfg.outputs.firmware }}
           TAG: ${{ steps.tag.outputs.tag }}
         run: |
@@ -307,6 +310,7 @@ jobs:
             --version "$KP_VER" \
             --apatch "$APATCH_VER" \
             --kpimg "$KPIMG" \
+            --superkey-mode "$SKEY_MODE" \
             --arch arm64 \
             --firmware "$FIRMWARE" \
             --out release/RELEASE_NOTES.md
@@ -339,5 +343,6 @@ jobs:
             echo "| 架构 | \`arm64\` |"
             echo "| 修补成功 | ${{ steps.patch.outputs.patched_count }} 个 |"
             echo "| 失败 | ${{ steps.patch.outputs.failed_count }} 个 |"
+            echo "| SuperKey 校验 | ${{ steps.patch.outputs.superkey_mode == 'with' && '已启用' || '未启用（不校验）' }} |"
             echo "| Release tag | \`${{ steps.tag.outputs.tag }}\` |"
           } >> "$GITHUB_STEP_SUMMARY"

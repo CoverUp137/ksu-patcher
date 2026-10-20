@@ -54,7 +54,7 @@
 | `firmware_url` | **（必填）** 固件直链 | `https://example.com/ota.zip` |
 | `partitions` | 要提取分区，**默认只取 `boot`** | `boot` |
 | `patch_partitions` | 要修补的分区（留空=同上） | `boot` |
-| `superkey` | **（必填）** APatch SuperKey | 见下方说明 |
+| `superkey` | APatch SuperKey（**可选**） | `MyPhone2026` / 留空 |
 | `kernelpatch_version` | KernelPatch 版本 | `auto`（跟随 APatch）/ `0.13.9` |
 | `apatch_version` | APatch 管理器版本（命名/说明用） | `latest` / `11282` |
 | `release_tag` | 自定义 Release tag | `my-pixel8-apatch` |
@@ -62,10 +62,13 @@
 | `extract_all` | 提取 payload 内全部分区 | `false` |
 | `create_release` | 是否创建 Release | `true` |
 
-**关于 SuperKey**
+**关于 SuperKey（可留空）**
 
-- 规则与 APatch App 一致：**8~63 位，且必须同时包含字母和数字**（例如 `MyPhone2026`）
-- 它既用于修补镜像，也要在开机后于 APatch App 里输入，两边必须一致
+- **不填就是「不校验 SuperKey」模式**：和 APatch App 里不勾选密钥修补一样，
+  补丁写入的是空的 root_superkey，开机后谁都可以直接 `su`——方便但**不安全**
+- 要设就按 App 的规则来：**8~63 位，且必须同时包含字母和数字**（例如 `MyPhone2026`）
+- 设置后既用于修补镜像，也要在开机后于 APatch App 里输入，两边必须一致
+- 实现上与 App 一致：给了密钥才加 `-S`（只存哈希），没给就完全省略
 - ⚠️ **仓库是公开的**：填写在输入框里的 SuperKey 会记录在 run 事件中，任何人都能看到。
   推荐改用仓储 Secret（**Settings → Secrets and variables → Actions → Secrets**）：
 
@@ -114,7 +117,7 @@ fastboot reboot
 > adb shell su -c "dd if=/dev/block/by-name/init_boot of=/sdcard/stock_init_boot.img"
 > ```
 >
-> APatch 开机后打开 App，在「安装 / 修补」处输入构建时使用的 SuperKey 即可接管 root。
+> APatch 开机后打开 App 即可接管 root；若构建时设过 SuperKey，则需要在「安装 / 修补」处输入同一个 Key。
 
 ## 🧠 KernelSU：关于 KMI 与 boot / init_boot
 

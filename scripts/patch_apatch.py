@@ -7,7 +7,8 @@
 2. kptools unpack 解出 kernel，确认镜像里真的有内核
 3. 检查 CONFIG_KALLSYMS（APatch 的硬性要求），并提示 KALLSYMS_ALL
 4. kptools -p -i <boot.img> -S <superkey> -k kpimg -o <out>
-   （-i 直接给 boot 镜像时，kptools 会自己解包内核、打补丁并重打包）
+   （-i 直接给 boot 镜像时，kptools 会自己解包内核、打补丁并重打包；
+     未提供 SuperKey 时省略 -S，即 APatch 的「不校验 SuperKey」模式）
 5. 重新解包产物，确认 patched=true，且 kpimg 版本与本次使用的一致
 
 注意：APatch 修补的是内核，只有 `boot`（部分设备是 `recovery`）里带内核，
@@ -184,7 +185,7 @@ def main() -> int:
                         help="只修补这些分区（逗号分隔，留空=全部）")
     parser.add_argument("--out-dir", default="work/patched", help="产物目录")
     parser.add_argument("--superkey", default="",
-                        help="APatch SuperKey（8~63 位，含字母和数字）")
+                        help="APatch SuperKey（8~63 位，含字母和数字）；留空=不校验 SuperKey")
     parser.add_argument("--version", default="", help="KernelPatch 版本，用于命名")
     parser.add_argument("--kpimg", default="", help="kpimg 路径（默认 tools/kpimg）")
     parser.add_argument("--kptools", default="", help="kptools 路径（默认 tools/kptools）")
@@ -194,10 +195,16 @@ def main() -> int:
                         help="内核未开启 CONFIG_KALLSYMS 时仍然继续")
     args = parser.parse_args()
 
-    key_error = validate_superkey(args.superkey)
-    if key_error:
-        error(f"SuperKey 无效：{key_error}")
-        return 1
+    superkey = (args.superkey or "").strip()
+    if superkey:
+        key_error = validate_superkey(superkey)
+        if key_error:
+            error(f"SuperKey 无效：{key_error}")
+            return 1
+        info("SuperKey: 已设置（<superkey>，日志中已打码）")
+    else:
+        warn("未设置 SuperKey：按 APatch 的「无 SuperKey」模式修补，")
+        warn("开机后 APatch 不会校验密钥（设备上谁都可能拿到 root），请自行权衡。")
 
     kptools = args.kptools or find_tool("kptools")
     kpimg = args.kpimg or find_tool("kpimg")
@@ -292,11 +299,12 @@ def main() -> int:
 
                     log("")
                     out_tmp = tmp_path / "patched.img"
-                    proc = run_kptools(
-                        [kptools, "-p", "-i", raw, "-S", args.superkey,
-                         "-k", kpimg, "-o", out_tmp],
-                        cwd=tmp_path, secret=args.superkey,
-                    )
+                    patch_cmd = [kptools, "-p", "-i", raw]
+                    if superkey:
+                        # -S = 只存 SuperKey 哈希（可在 App 里更换），与 boot_patch.sh 一致
+                        patch_cmd += ["-S", superkey]
+                    patch_cmd += ["-k", kpimg, "-o", out_tmp]
+                    proc = run_kptools(patch_cmd, cwd=tmp_path, secret=superkey or None)
                     if proc.returncode != 0 or not out_tmp.is_file():
                         error("kptools 修补失败")
                         failed.append({"image": img.name, "reason": "kptools 修补失败"})
@@ -356,6 +364,7 @@ def main() -> int:
         patched_count=len(results),
         failed_count=len(failed),
         kpimg_version=kpimg_ver,
+        superkey_mode="with" if superkey else "without",
     )
 
     rows = "\n".join(
@@ -366,6 +375,7 @@ def main() -> int:
         "### APatch 修补结果\n\n"
         f"- KernelPatch：`{args.version or 'auto'}`\n"
         f"- kpimg：`{kpimg_ver}`\n"
+        f"- SuperKey：{'已设置（打码）' if superkey else '未设置（不校验）'}\n"
         f"- 成功：{len(results)}，失败：{len(failed)}\n\n"
         f"| 文件 | 分区 | 大小 | SHA256 |\n|---|---|---|---|\n{rows}\n"
     )
