@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""生成 Release 说明（Markdown）。"""
+"""生成 Release 说明（Markdown），支持 KernelSU 与 APatch 两种产物。"""
 from __future__ import annotations
 
 import argparse
@@ -12,12 +12,24 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from utils import human_size, log, ok  # noqa: E402
 
 
+def file_table(files: list[dict]) -> list[str]:
+    lines = ["| 文件 | 大小 | SHA256 |", "|---|---|---|"]
+    for f in files:
+        lines.append(f"| `{f['name']}` | {human_size(f['size'])} | `{f['sha256'][:16]}…` |")
+    return lines
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="生成 Release 说明")
     parser.add_argument("--manifest", required=True, help="manifest.json 路径")
     parser.add_argument("--tag", default="", help="Release tag")
-    parser.add_argument("--ksu", default="", help="KernelSU 版本")
-    parser.add_argument("--kmi", default="", help="KMI 版本")
+    parser.add_argument("--tool", choices=["kernelsu", "apatch"], default="kernelsu",
+                        help="产物类型")
+    parser.add_argument("--version", default="", help="KernelSU / KernelPatch 版本")
+    parser.add_argument("--ksu", default="", help="（兼容）KernelSU 版本")
+    parser.add_argument("--apatch", default="", help="APatch 管理器版本")
+    parser.add_argument("--kpimg", default="", help="kpimg 版本（APatch）")
+    parser.add_argument("--kmi", default="", help="KMI 版本（KernelSU）")
     parser.add_argument("--arch", default="", help="目标架构")
     parser.add_argument("--firmware", default="", help="固件直链")
     parser.add_argument("--out", required=True, help="输出文件")
@@ -30,17 +42,35 @@ def main() -> int:
     patched = [f for f in files if f["path"].startswith("patched/")]
     parts = [f for f in files if f["path"].startswith("partitions/")]
 
+    version = args.version or args.ksu or manifest.get("version", "")
+    apatch = args.tool == "apatch"
+
     lines: list[str] = []
-    lines.append("## KernelSU 修补镜像")
-    lines.append("")
-    lines.append("由 GitHub Actions 自动构建：下载固件 → 解包提取分区 → KernelSU 修补 → 发布。")
+    if apatch:
+        lines.append("## APatch 修补镜像")
+        lines.append("")
+        lines.append("由 GitHub Actions 自动构建：下载固件 → 解包提取分区 → "
+                     "APatch（KernelPatch）修补内核 → 发布。")
+    else:
+        lines.append("## KernelSU 修补镜像")
+        lines.append("")
+        lines.append("由 GitHub Actions 自动构建：下载固件 → 解包提取分区 → "
+                     "KernelSU 修补 → 发布。")
     lines.append("")
     lines.append("| 项目 | 值 |")
     lines.append("|---|---|")
-    if args.ksu:
-        lines.append(f"| KernelSU 版本 | `{args.ksu}` |")
-    if args.kmi:
-        lines.append(f"| KMI | `{args.kmi}` |")
+    if apatch:
+        if args.apatch:
+            lines.append(f"| APatch 管理器 | `{args.apatch}` |")
+        if version:
+            lines.append(f"| KernelPatch | `{version}` |")
+        if args.kpimg:
+            lines.append(f"| kpimg | `{args.kpimg}` |")
+    else:
+        if version:
+            lines.append(f"| KernelSU 版本 | `{version}` |")
+        if args.kmi:
+            lines.append(f"| KMI | `{args.kmi}` |")
     if args.arch:
         lines.append(f"| 目标架构 | `{args.arch}` |")
     lines.append(f"| 构建时间 | {manifest.get('generated_at', '')[:19].replace('T', ' ')} UTC |")
@@ -60,19 +90,13 @@ def main() -> int:
     if patched:
         lines.append("### 📦 已 Root 镜像（可直接刷入）")
         lines.append("")
-        lines.append("| 文件 | 大小 | SHA256 |")
-        lines.append("|---|---|---|")
-        for f in patched:
-            lines.append(f"| `{f['name']}` | {human_size(f['size'])} | `{f['sha256'][:16]}…` |")
+        lines.extend(file_table(patched))
         lines.append("")
 
     if parts:
         lines.append("### 🗂 原始分区镜像")
         lines.append("")
-        lines.append("| 文件 | 大小 | SHA256 |")
-        lines.append("|---|---|---|")
-        for f in parts:
-            lines.append(f"| `{f['name']}` | {human_size(f['size'])} | `{f['sha256'][:16]}…` |")
+        lines.extend(file_table(parts))
         lines.append("")
 
     lines.append("### 🔧 刷入方法")
@@ -80,12 +104,20 @@ def main() -> int:
     lines.append("```bash")
     lines.append("# 确认当前 slot，A 槽为 boot_a，B 槽为 boot_b")
     lines.append("adb reboot bootloader")
-    lines.append("fastboot flash boot patched/boot-*.img          # 或 init_boot")
+    if apatch:
+        lines.append("fastboot flash boot patched/boot-*.img")
+    else:
+        lines.append("fastboot flash boot patched/boot-*.img          # 或 init_boot")
     lines.append("fastboot reboot")
     lines.append("```")
     lines.append("")
-    lines.append("> 使用 `init_boot` 修补包的设备请将 `boot` 换成 `init_boot`；")
-    lines.append("> 刷入前建议先备份原分区，并确认与固件版本完全一致。")
+    if apatch:
+        lines.append("> APatch 修补的是**内核**，请刷入 `boot` 分区（不要用 `init_boot`）。")
+        lines.append("> 开机后打开 APatch App，在「安装 / 修补」里输入构建时填写的 **SuperKey** 即可接管 root。")
+        lines.append("> 首次刷入后建议保留原始 `boot` 镜像备份，异常时可回刷。")
+    else:
+        lines.append("> 使用 `init_boot` 修补包的设备请将 `boot` 换成 `init_boot`；")
+        lines.append("> 刷入前建议先备份原分区，并确认与固件版本完全一致。")
     lines.append("")
     lines.append("### ✅ 校验")
     lines.append("")
@@ -93,7 +125,7 @@ def main() -> int:
     lines.append("sha256sum -c SHA256SUMS.txt")
     lines.append("```")
     lines.append("")
-    lines.append(f"完整清单见 `manifest.json`。")
+    lines.append("完整清单见 `manifest.json`。")
 
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)

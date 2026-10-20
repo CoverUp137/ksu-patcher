@@ -3,7 +3,7 @@ name: Smoke Test
 # 在推送/PR 时跑冒烟测试，确保脚本链路没有回归
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
     paths:
       - 'scripts/**'
       - 'tests/**'
@@ -35,8 +35,18 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq android-sdk-libsparse-utils p7zip-full cpio
-          python3 scripts/setup_tools.py --skip-apt --skip-magiskboot
+          python3 scripts/setup_tools.py --skip-apt
           python3 -m pip install --quiet pyyaml
+
+      - name: 获取 KernelSU / APatch 工具链
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # 工具下载失败不阻断流程：单测仍可跑，相关端到端用例会自动跳过
+          python3 scripts/fetch_kernelsu.py --version latest --out-dir tools \
+            || echo "::warning::KernelSU 工具获取失败"
+          python3 scripts/fetch_apatch.py --kp-version auto --out-dir tools \
+            || echo "::warning::APatch 工具获取失败"
 
       - name: 语法检查
         run: |

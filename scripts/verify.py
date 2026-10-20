@@ -5,8 +5,9 @@
 ------
 1. magic 是否为 ANDROID! / VNDRBOOT
 2. 头部字段是否自洽（页大小、kernel/ramdisk 大小）
-3. 若镜像被 KernelSU 修补，其 ramdisk 里应包含 kernelsu.ko 与 ksuinit
-4. 用 magiskboot 再做一次交叉验证（可选）
+3. KernelSU 模式：ramdisk 里应包含 kernelsu.ko
+   APatch 模式：解开内核后用 kptools 确认 patched=true
+4. 用 magiskboot 再做一次交叉验证（可选，仅 KernelSU 模式）
 
 注意：这是「尽力而为」的检查，默认失败只告警；--strict 时才会返回非零。
 """
@@ -22,6 +23,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from fetch_apatch import parse_ini  # noqa: E402
 from utils import (  # noqa: E402
     ANDROID_MAGIC,
     find_tool,
@@ -116,9 +118,26 @@ def unpack_ramdisk(image: Path) -> set[str] | None:
         return {p.name for p in extract_dir.rglob("*") if p.is_file()}
 
 
+def apatch_kernel_info(kptools: str, image: Path) -> dict[str, dict[str, str]] | None:
+    """用 kptools 解出内核并读取补丁信息；失败返回 None。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        proc = run([kptools, "unpack", str(image.resolve())],
+                   check=False, capture=True, cwd=tmp_path)
+        kernel = tmp_path / "kernel"
+        if proc.returncode != 0 or not kernel.is_file() or kernel.stat().st_size == 0:
+            return None
+        proc = run([kptools, "-i", str(kernel), "-l"], check=False, capture=True)
+        if proc.returncode != 0:
+            return None
+        return parse_ini(proc.stdout)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="校验修补后的镜像")
     parser.add_argument("--patched", required=True, help="修补后的镜像，逗号或换行分隔")
+    parser.add_argument("--mode", choices=["kernelsu", "apatch"], default="kernelsu",
+                        help="修补方式：kernelsu（默认）或 apatch")
     parser.add_argument("--strict", action="store_true", help="任一项失败即返回非零")
     parser.add_argument("--skip-magiskboot", action="store_true", help="跳过 magiskboot 交叉验证")
     args = parser.parse_args()
@@ -168,7 +187,27 @@ def main() -> int:
                 else:
                     warn(f"未按 {page} 字节页对齐")
 
-            if not args.skip_magiskboot:
+            if args.mode == "apatch":
+                kptools = find_tool("kptools")
+                if not kptools:
+                    warn("未找到 kptools，跳过 APatch 内核检查")
+                else:
+                    info = apatch_kernel_info(kptools, image)
+                    if info is None:
+                        checks["kernel_readable"] = False
+                        error("无法解出内核，产物可能损坏")
+                        failures += 1
+                    else:
+                        checks["kernel_readable"] = True
+                        patched = info.get("kernel", {}).get("patched") == "true"
+                        checks["apatch_patched"] = patched
+                        kpimg_ver = info.get("kpimg", {}).get("version", "")
+                        if patched:
+                            ok(f"内核已打上 APatch 补丁（kpimg {kpimg_ver or '未知'}）")
+                        else:
+                            error("内核未显示 patched=true，APatch 未生效")
+                            failures += 1
+            elif not args.skip_magiskboot:
                 names = unpack_ramdisk(image)
                 if names is not None:
                     checks["ramdisk_readable"] = True

@@ -4,7 +4,7 @@
 产物结构
 --------
 release/
-├── patched/            # KernelSU 修补后的镜像（root 用）
+├── patched/            # 修补后的镜像（KernelSU / APatch）
 ├── partitions/         # 用户指定提取的原始分区镜像
 ├── SHA256SUMS.txt
 └── manifest.json
@@ -66,7 +66,9 @@ def main() -> int:
     parser.add_argument("--patched", default="", help="修补后的镜像列表，逗号分隔")
     parser.add_argument("--partitions", default="", help="提取的原始分区列表，逗号分隔")
     parser.add_argument("--out-dir", default="release", help="发布目录")
-    parser.add_argument("--version", default="", help="KernelSU 版本")
+    parser.add_argument("--tool", choices=["kernelsu", "apatch"], default="kernelsu",
+                        help="产物类型：kernelsu（默认）或 apatch")
+    parser.add_argument("--version", default="", help="KernelSU / KernelPatch 版本")
     parser.add_argument("--firmware", default="", help="固件来源标识")
     parser.add_argument("--kmi", default="", help="KMI 版本")
     args = parser.parse_args()
@@ -106,7 +108,10 @@ def main() -> int:
 
     manifest = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "kernelsu_version": args.version,
+        "tool": args.tool,
+        "version": args.version,
+        "kernelsu_version": args.version if args.tool == "kernelsu" else "",
+        "kernelpatch_version": args.version if args.tool == "apatch" else "",
         "kmi": args.kmi,
         "firmware": args.firmware,
         "patched": [p.name for p in collected if p.parent == patched_dir],
@@ -144,9 +149,10 @@ def main() -> int:
 
     patched_list = "\n".join(f"- `{p.name}`" for p in collected if p.parent == patched_dir)
     part_list = "\n".join(f"- `{p.name}`" for p in collected if p.parent == part_dir)
+    label = "APatch（KernelPatch）" if args.tool == "apatch" else "KernelSU"
     summary(
         "### 发布产物\n\n"
-        f"- KernelSU：`{args.version}`\n"
+        f"- {label}：`{args.version}`\n"
         f"- KMI：`{args.kmi}`\n"
         f"- 总大小：{total / 1024 / 1024:.1f} MB\n\n"
         + (f"**已修补（Root）**\n{patched_list}\n\n" if patched_list else "")

@@ -212,6 +212,72 @@ def main() -> int:
                 notes = work / "release" / "RELEASE_NOTES.md"
                 check("Release 说明非空", notes.is_file() and notes.stat().st_size > 100)
 
+    # ---------------- 7. APatch / KernelPatch ----------------
+    print("\n=== 7. APatch（KernelPatch）===")
+    from fetch_apatch import parse_ini as kp_parse_ini  # noqa: E402
+    from patch_apatch import (  # noqa: E402
+        default_out_name,
+        pick_images,
+        validate_superkey,
+    )
+
+    check("SuperKey 合法（8~63 位，含字母和数字）",
+          validate_superkey("Abcd1234") is None,
+          str(validate_superkey("Abcd1234")))
+    check("SuperKey 缺少数字被拒", validate_superkey("Abcdefgh") is not None)
+    check("SuperKey 缺少字母被拒", validate_superkey("12345678") is not None)
+    check("SuperKey 过短被拒", validate_superkey("Aa1") is not None)
+    check("SuperKey 含空格被拒", validate_superkey("Abcd 1234") is not None)
+
+    check("APatch 产物命名正确",
+          default_out_name("boot", "0.13.9") == "boot-APatch-0.13.9-patched.img",
+          default_out_name("boot", "0.13.9"))
+
+    sample = "[kernel]\nbanner=Linux version 6.6.66\npatched=true\n[kpimg]\nversion=0xd09\narch=arm64\n"
+    sections = kp_parse_ini(sample)
+    check("kptools -l 输出可解析",
+          sections.get("kernel", {}).get("patched") == "true"
+          and sections.get("kpimg", {}).get("version") == "0xd09",
+          str(sections))
+
+    boot_imgs = [Path("x/boot.img"), Path("x/init_boot.img"), Path("x/vendor_boot.img")]
+    picked, _ = pick_images(boot_imgs, "boot")
+    check("分区筛选精确匹配 boot（不误伤 init_boot）",
+          [p.name for p in picked] == ["boot.img"],
+          str([p.name for p in picked]))
+
+    kptools = ROOT / "tools" / "kptools"
+    kpimg = ROOT / "tools" / "kpimg"
+    check("tools/kptools 存在", kptools.is_file(), str(kptools))
+    check("tools/kpimg 存在", kpimg.is_file(), str(kpimg))
+
+    if kptools.is_file() and kpimg.is_file() and real_boot.is_file():
+        print("\n=== 7b. APatch 端到端 ===")
+        e2e = Path(tempfile.mkdtemp())
+        r = run_step("patch-apatch", [
+            sys.executable, str(ROOT / "scripts" / "patch_apatch.py"),
+            "--images", str(real_boot),
+            "--out-dir", str(e2e / "patched"),
+            "--superkey", "TestKey12345",
+            "--version", "test",
+        ], e2e)
+        check("patch_apatch.py 退出码 0", r.returncode == 0,
+              (r.stdout or "")[-400:] if r.returncode else "")
+        a_produced = sorted((e2e / "patched").glob("*.img")) if (e2e / "patched").exists() else []
+        check("生成了 APatch 修补镜像", len(a_produced) > 0,
+              str([p.name for p in a_produced]))
+
+        if a_produced:
+            r = run_step("verify-apatch", [
+                sys.executable, str(ROOT / "scripts" / "verify.py"),
+                "--mode", "apatch", "--strict",
+                "--patched", str(a_produced[0]),
+            ], e2e)
+            check("verify.py --mode apatch 通过", r.returncode == 0,
+                  (r.stdout or "")[-400:] if r.returncode else "")
+    else:
+        print("\n=== 7b. 跳过：缺少 tools/kptools、tools/kpimg 或 tests/fixtures/boot.img ===")
+
     print("\n" + "=" * 60)
     print(f"通过 {len(PASS)} 项，失败 {len(FAIL)} 项")
     for name in FAIL:
