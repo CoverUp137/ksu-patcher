@@ -24,3 +24,6 @@ Thumbs.db
 *.bin
 *.zip
 *.tar.md5
+
+# kptools 临时文件
+temp.gz
