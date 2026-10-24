@@ -31,6 +31,9 @@ GitHub Actions 里跑完全程：**下载固件 → 解包提取分区 → 修�
 | `superkey` | 可留空，见下 |
 | `kernelpatch_version` | `auto` 跟随 APatch 上游，或写 `0.13.9` |
 
+Release 的 tag 和名称默认自动生成；想自定义就填 `release_tag`（tag，同时决定发布地址）和
+`release_name`（只改标题，留空=用 tag）。
+
 构建完在 **Releases** / **Artifacts** 取 `patched/`（已 Root 镜像）和 `partitions/`（原分区）。
 
 ## 刷入

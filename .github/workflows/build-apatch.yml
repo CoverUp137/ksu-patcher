@@ -39,6 +39,11 @@ on:
         required: false
         default: ''
         type: string
+      release_name:
+        description: '自定义 Release 名称（留空 = 用 tag）'
+        required: false
+        default: ''
+        type: string
       allow_no_kallsyms:
         description: '内核未开启 CONFIG_KALLSYMS 时仍强制修补（多半无法开机）'
         required: false
@@ -174,6 +179,7 @@ jobs:
         id: tag
         env:
           IN_TAG: ${{ inputs.release_tag }}
+          IN_NAME: ${{ inputs.release_name }}
           KP: ${{ steps.apatch.outputs.kernelpatch_version }}
           FIRMWARE: ${{ steps.cfg.outputs.firmware }}
         run: |
@@ -184,8 +190,11 @@ jobs:
             FINGERPRINT=$(printf '%s' "$FIRMWARE" | sha256sum | cut -c1-6)
             TAG="apatch-${KP}-$(date -u +%Y%m%d)-${FINGERPRINT}"
           fi
+          NAME="${IN_NAME:-$TAG}"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
           echo "Release tag: $TAG"
+          echo "Release 名称: $NAME"
 
       - name: 下载固件
         id: dl
@@ -316,7 +325,7 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
-          name: ${{ steps.tag.outputs.tag }}
+          name: ${{ steps.tag.outputs.name }}
           body_path: release/RELEASE_NOTES.md
           files: |
             release/patched/*.img

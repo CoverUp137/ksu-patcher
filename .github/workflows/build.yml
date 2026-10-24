@@ -41,6 +41,11 @@ on:
         required: false
         default: ''
         type: string
+      release_name:
+        description: '自定义 Release 名称（留空 = 用 tag）'
+        required: false
+        default: ''
+        type: string
       cmdline:
         description: '追加到 boot 头的额外 cmdline（可选）'
         required: false
@@ -113,6 +118,7 @@ jobs:
           IN_KMI: ${{ inputs.kmi }}
           IN_ARCH: ${{ inputs.arch }}
           IN_TAG: ${{ inputs.release_tag }}
+          IN_NAME: ${{ inputs.release_name }}
           IN_CMDLINE: ${{ inputs.cmdline }}
           IN_ALLOW_SHELL: ${{ inputs.allow_shell }}
           IN_ADBD: ${{ inputs.enable_adbd }}
@@ -162,6 +168,7 @@ jobs:
             echo "kernelsu=$KSU"
             echo "arch=$ARCH"
             echo "tag=$TAG"
+            echo "name=${IN_NAME:-$TAG}"
             echo "release=${IN_RELEASE:-true}"
             echo "unpack_flags=$UNPACK_FLAGS"
             echo "patch_flags=$PATCH_FLAGS"
@@ -314,7 +321,7 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.cfg.outputs.tag }}
-          name: ${{ steps.cfg.outputs.tag }}
+          name: ${{ steps.cfg.outputs.name }}
           body_path: release/RELEASE_NOTES.md
           files: |
             release/patched/*.img
