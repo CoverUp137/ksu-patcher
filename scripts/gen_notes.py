@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""生成 Release 说明（Markdown），支持 KernelSU 与 APatch 两种产物。"""
+"""生成 Release 说明（Markdown）：KernelSU / APatch / 纯分区三种产物。"""
 from __future__ import annotations
 
 import argparse
@@ -23,8 +23,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="生成 Release 说明")
     parser.add_argument("--manifest", required=True, help="manifest.json 路径")
     parser.add_argument("--tag", default="", help="Release tag")
-    parser.add_argument("--tool", choices=["kernelsu", "apatch"], default="kernelsu",
-                        help="产物类型")
+    parser.add_argument("--tool", choices=["kernelsu", "apatch", "firmware"],
+                        default="kernelsu", help="产物类型")
     parser.add_argument("--version", default="", help="KernelSU / KernelPatch 版本")
     parser.add_argument("--ksu", default="", help="（兼容）KernelSU 版本")
     parser.add_argument("--apatch", default="", help="APatch 管理器版本")
@@ -48,7 +48,11 @@ def main() -> int:
     apatch = args.tool == "apatch"
 
     lines: list[str] = []
-    if apatch:
+    if args.tool == "firmware":
+        lines.append("## 固件分区镜像")
+        lines.append("")
+        lines.append("由 GitHub Actions 自动构建：下载固件 → 解包提取分区 → 发布（未做任何修补）。")
+    elif apatch:
         lines.append("## APatch 修补镜像")
         lines.append("")
         lines.append("由 GitHub Actions 自动构建：下载固件 → 解包提取分区 → "
@@ -104,26 +108,36 @@ def main() -> int:
     lines.append("### 🔧 刷入方法")
     lines.append("")
     lines.append("```bash")
-    lines.append("# 确认当前 slot，A 槽为 boot_a，B 槽为 boot_b")
-    lines.append("adb reboot bootloader")
-    if apatch:
-        lines.append("fastboot flash boot patched/boot-*.img")
+    if args.tool == "firmware":
+        lines.append("adb reboot bootloader")
+        lines.append("fastboot flash boot partitions/boot.img   # 文件名就是分区名")
+        lines.append("fastboot reboot")
+        lines.append("```")
+        lines.append("")
+        lines.append("> 文件名与分区一一对应（如 `init_boot.img` → `init_boot`）；")
+        lines.append("> A/B 设备请按当前 slot 刷到对应槽位，刷前先备份原分区。")
     else:
-        lines.append("fastboot flash boot patched/boot-*.img          # 或 init_boot")
-    lines.append("fastboot reboot")
-    lines.append("```")
-    lines.append("")
-    if apatch:
-        lines.append("> APatch 修补的是**内核**，请刷入 `boot` 分区（不要用 `init_boot`）。")
-        if args.superkey_mode == "without":
-            lines.append("> 本次构建**未设置 SuperKey**，开机后直接打开 APatch App 即可接管 root"
-                         "（不校验密钥，注意安全）。")
+        lines.append("# 确认当前 slot，A 槽为 boot_a，B 槽为 boot_b")
+        lines.append("adb reboot bootloader")
+        if apatch:
+            lines.append("fastboot flash boot patched/boot-*.img")
         else:
-            lines.append("> 开机后打开 APatch App，在「安装 / 修补」里输入构建时填写的 **SuperKey** 即可接管 root。")
-        lines.append("> 首次刷入后建议保留原始 `boot` 镜像备份，异常时可回刷。")
-    else:
-        lines.append("> 使用 `init_boot` 修补包的设备请将 `boot` 换成 `init_boot`；")
-        lines.append("> 刷入前建议先备份原分区，并确认与固件版本完全一致。")
+            lines.append("fastboot flash boot patched/boot-*.img          # 或 init_boot")
+        lines.append("fastboot reboot")
+        lines.append("```")
+        lines.append("")
+        if apatch:
+            lines.append("> APatch 修补的是**内核**，请刷入 `boot` 分区（不要用 `init_boot`）。")
+            if args.superkey_mode == "without":
+                lines.append("> 本次构建**未设置 SuperKey**，开机后直接打开 APatch App 即可接管 root"
+                             "（不校验密钥，注意安全）。")
+            else:
+                lines.append("> 开机后打开 APatch App，在「安装 / 修补」里输入构建时填写的 "
+                             "**SuperKey** 即可接管 root。")
+            lines.append("> 首次刷入后建议保留原始 `boot` 镜像备份，异常时可回刷。")
+        else:
+            lines.append("> 使用 `init_boot` 修补包的设备请将 `boot` 换成 `init_boot`；")
+            lines.append("> 刷入前建议先备份原分区，并确认与固件版本完全一致。")
     lines.append("")
     lines.append("### ✅ 校验")
     lines.append("")

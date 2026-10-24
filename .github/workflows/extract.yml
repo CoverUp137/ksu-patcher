@@ -1,0 +1,217 @@
+name: Extract Firmware Partitions
+
+# 只提取固件里的分区并发布，不做任何修补（想自己手动改 boot 时用）
+on:
+  workflow_dispatch:
+    inputs:
+      firmware_url:
+        description: '固件直链（可多个，换行或逗号分隔）'
+        required: true
+        type: string
+      partitions:
+        description: '要提取的分区 img（逗号分隔）'
+        required: false
+        default: 'boot,init_boot'
+        type: string
+      extract_all:
+        description: '提取 payload 内全部分区（忽略上面的列表，体积较大）'
+        required: false
+        default: false
+        type: boolean
+      release_tag:
+        description: '自定义 Release tag（留空自动生成）'
+        required: false
+        default: ''
+        type: string
+      release_name:
+        description: '自定义 Release 名称（留空 = 用 tag）'
+        required: false
+        default: ''
+        type: string
+      create_release:
+        description: '是否创建 Release（关掉只留 Artifacts）'
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v7
+
+      - name: 设置 Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: 释放磁盘空间
+        run: |
+          echo "清理前:"; df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android/sdk/ndk \
+                      /opt/ghc /usr/local/share/boost \
+                      /usr/local/lib/android/sdk/system-images \
+                      "$AGENT_TOOLSDIRECTORY" 2>/dev/null || true
+          sudo apt-get clean
+          echo "清理后:"; df -h /
+
+      - name: 解析构建参数
+        id: cfg
+        env:
+          IN_FIRMWARE: ${{ inputs.firmware_url }}
+          IN_PARTITIONS: ${{ inputs.partitions }}
+          IN_TAG: ${{ inputs.release_tag }}
+          IN_NAME: ${{ inputs.release_name }}
+          IN_EXTRACT_ALL: ${{ inputs.extract_all }}
+          IN_RELEASE: ${{ inputs.create_release }}
+          DEFAULT_URL: ${{ vars.DEFAULT_FIRMWARE_URL }}
+        run: |
+          set -euo pipefail
+
+          FIRMWARE="${IN_FIRMWARE:-${DEFAULT_URL:-}}"
+          if [ -z "$FIRMWARE" ]; then
+            echo "::error::未提供固件直链。请填写 firmware_url，"
+            echo "::error::或在 Variables 里配置 DEFAULT_FIRMWARE_URL。"
+            exit 1
+          fi
+
+          if [ "${IN_EXTRACT_ALL:-false}" = "true" ]; then
+            TAG_PREFIX="fw-all"
+            UNPACK_FLAGS="--extract-all"
+          else
+            TAG_PREFIX="fw"
+            UNPACK_FLAGS=""
+          fi
+
+          if [ -n "${IN_TAG:-}" ]; then
+            TAG="$IN_TAG"
+          else
+            FINGERPRINT=$(printf '%s' "$FIRMWARE" | sha256sum | cut -c1-6)
+            TAG="${TAG_PREFIX}-$(date -u +%Y%m%d)-${FINGERPRINT}"
+          fi
+          NAME="${IN_NAME:-$TAG}"
+
+          {
+            echo "firmware<<__EOF__"
+            echo "$FIRMWARE"
+            echo "__EOF__"
+            echo "partitions=${IN_PARTITIONS:-boot,init_boot}"
+            echo "unpack_flags=$UNPACK_FLAGS"
+            echo "extract_all=${IN_EXTRACT_ALL:-false}"
+            echo "release=${IN_RELEASE:-true}"
+            echo "tag=$TAG"
+            echo "name=$NAME"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "tag: $TAG"
+          echo "名称: $NAME"
+          echo "分区: ${IN_PARTITIONS:-boot,init_boot}（extract_all=${IN_EXTRACT_ALL:-false}）"
+
+      - name: 安装工具
+        run: python3 scripts/setup_tools.py
+
+      - name: 下载固件
+        env:
+          FIRMWARE: ${{ steps.cfg.outputs.firmware }}
+        run: |
+          python3 scripts/download.py \
+            --urls "$FIRMWARE" \
+            --out-dir downloads
+
+      - name: 解包并提取分区
+        id: unpack
+        run: |
+          python3 scripts/unpack.py \
+            --input downloads \
+            --out-dir work/unpacked \
+            --partitions '${{ steps.cfg.outputs.partitions }}' \
+            ${{ steps.cfg.outputs.unpack_flags }}
+
+      - name: 整理发布产物
+        id: rel
+        env:
+          TARGETS: ${{ steps.unpack.outputs.targets_json }}
+          PARTITIONS_JSON: ${{ steps.unpack.outputs.partitions_json }}
+          EXTRACT_ALL: ${{ steps.cfg.outputs.extract_all }}
+          FIRMWARE: ${{ steps.cfg.outputs.firmware }}
+        run: |
+          set -euo pipefail
+
+          FILES=$(python3 - <<'PY'
+          import json, os
+          if os.environ.get("EXTRACT_ALL") == "true":
+              index = json.loads(os.environ.get("PARTITIONS_JSON") or "{}")
+              print(",".join(dict.fromkeys(index.values())))
+          else:
+              print(",".join(json.loads(os.environ.get("TARGETS") or "[]")))
+          PY
+          )
+
+          if [ -z "$FILES" ]; then
+            echo "::error::没有提取到任何分区，请检查 partitions 输入与固件是否匹配。"
+            exit 1
+          fi
+          echo "将发布: $FILES"
+
+          python3 scripts/release.py \
+            --tool firmware \
+            --partitions "$FILES" \
+            --out-dir release \
+            --firmware "$FIRMWARE"
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v7
+        with:
+          name: firmware-${{ steps.cfg.outputs.tag }}
+          path: release/**
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: 生成 Release 说明
+        env:
+          FIRMWARE: ${{ steps.cfg.outputs.firmware }}
+          TAG: ${{ steps.cfg.outputs.tag }}
+        run: |
+          python3 scripts/gen_notes.py \
+            --manifest release/manifest.json \
+            --tag "$TAG" \
+            --tool firmware \
+            --firmware "$FIRMWARE" \
+            --out release/RELEASE_NOTES.md
+
+      - name: 发布 Release
+        if: ${{ steps.cfg.outputs.release == 'true' }}
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ steps.cfg.outputs.tag }}
+          name: ${{ steps.cfg.outputs.name }}
+          body_path: release/RELEASE_NOTES.md
+          files: |
+            release/partitions/*.img
+            release/SHA256SUMS.txt
+            release/manifest.json
+          fail_on_unmatched_files: false
+          overwrite_files: true
+
+      - name: 输出摘要
+        run: |
+          {
+            echo "## 分区提取完成"
+            echo ""
+            echo "| 项目 | 值 |"
+            echo "|---|---|"
+            echo "| 分区数 | ${{ steps.rel.outputs.file_count }} |"
+            echo "| 总大小 | ${{ steps.rel.outputs.total_size }} 字节 |"
+            echo "| Release tag | \`${{ steps.cfg.outputs.tag }}\` |"
+            echo "| Release 名称 | ${{ steps.cfg.outputs.name }} |"
+          } >> "$GITHUB_STEP_SUMMARY"

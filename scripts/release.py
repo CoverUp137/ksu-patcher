@@ -66,8 +66,9 @@ def main() -> int:
     parser.add_argument("--patched", default="", help="修补后的镜像列表，逗号分隔")
     parser.add_argument("--partitions", default="", help="提取的原始分区列表，逗号分隔")
     parser.add_argument("--out-dir", default="release", help="发布目录")
-    parser.add_argument("--tool", choices=["kernelsu", "apatch"], default="kernelsu",
-                        help="产物类型：kernelsu（默认）或 apatch")
+    parser.add_argument("--tool", choices=["kernelsu", "apatch", "firmware"],
+                        default="kernelsu",
+                        help="产物类型：kernelsu（默认）/ apatch / firmware（只发原始分区）")
     parser.add_argument("--version", default="", help="KernelSU / KernelPatch 版本")
     parser.add_argument("--firmware", default="", help="固件来源标识")
     parser.add_argument("--kmi", default="", help="KMI 版本")
@@ -149,12 +150,15 @@ def main() -> int:
 
     patched_list = "\n".join(f"- `{p.name}`" for p in collected if p.parent == patched_dir)
     part_list = "\n".join(f"- `{p.name}`" for p in collected if p.parent == part_dir)
-    label = "APatch（KernelPatch）" if args.tool == "apatch" else "KernelSU"
+    label = {"apatch": "APatch（KernelPatch）", "firmware": "固件分区"}.get(args.tool, "KernelSU")
+    head = "### 发布产物\n\n"
+    if args.version:
+        head += f"- {label}：`{args.version}`\n"
+    if args.kmi:
+        head += f"- KMI：`{args.kmi}`\n"
+    head += f"- 总大小：{total / 1024 / 1024:.1f} MB\n\n"
     summary(
-        "### 发布产物\n\n"
-        f"- {label}：`{args.version}`\n"
-        f"- KMI：`{args.kmi}`\n"
-        f"- 总大小：{total / 1024 / 1024:.1f} MB\n\n"
+        head
         + (f"**已修补（Root）**\n{patched_list}\n\n" if patched_list else "")
         + (f"**原始分区**\n{part_list}\n" if part_list else "")
     )
