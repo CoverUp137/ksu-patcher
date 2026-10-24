@@ -4,6 +4,7 @@ GitHub Actions 里跑完全程：**下载固件 → 解包提取分区 → 修�
 
 - **Build KernelSU Patched Images** — `ksud` LKM 方式，一般修 `boot` / `init_boot`
 - **Build APatch Patched Images** — `kptools` 直接修内核，只认 `boot`
+- **Extract Firmware Partitions** — 只提取分区发出来，不修补
 
 默认分支 `dev`（两套都有），`main` 只有 KernelSU。
 
@@ -33,6 +34,9 @@ GitHub Actions 里跑完全程：**下载固件 → 解包提取分区 → 修�
 
 Release 的 tag 和名称默认自动生成；想自定义就填 `release_tag`（tag，同时决定发布地址）和
 `release_name`（只改标题，留空=用 tag）。
+
+**Extract Firmware Partitions** 参数更少：`firmware_url` + `partitions`（默认 `boot,init_boot`），
+勾 `extract_all` 就是整包全提。
 
 构建完在 **Releases** / **Artifacts** 取 `patched/`（已 Root 镜像）和 `partitions/`（原分区）。
 
